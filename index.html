@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Student QR Generator</title>
+</head>
+<body>
+  <h1>Student QR Generator</h1>
+  <p>QR content: exact LRN text only. Layout: 5 QR cards per row, matching the reference image proportions.</p>
+
+  <label for="studentCount">Number of students:</label>
+  <input id="studentCount" type="number" min="1" value="32">
+  <button id="createTableBtn" type="button">Create Table</button>
+
+  <p>Copy the 5 columns from Google Sheets, click the first cell below, then press Ctrl+V.</p>
+
+  <div id="tableContainer"></div>
+
+  <p>
+    <button id="generateBtn" type="button">Generate Preview</button>
+    <button id="exportBtn" type="button">Export PNG / ZIP</button>
+  </p>
+
+  <p id="status"></p>
+  <div id="preview"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
