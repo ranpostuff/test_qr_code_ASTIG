@@ -18,12 +18,18 @@
   const QR_MODULE_PIXELS = 30; // integer scaling: never blur QR module edges
   const QR_MODULES_WITH_QUIET_ZONE = 29; // 21 modules + four white modules per side
   const QR_SIZE = QR_MODULE_PIXELS * QR_MODULES_WITH_QUIET_ZONE;
+<<<<<<< HEAD
+  let students = [];
+  let lastDetection = { students: [], rejected: [] };
+
+=======
   const FIELD_COUNT = 5;
   const DEFAULT_HEADERS = ["NAME OF STUDENT", "NAME OF PARENT", "EMAIL ADDRESS", "PHONE NO. (PARENT)", "LRN"];
 
   let students = [];
   let inputSource = "table";
 
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
   function clean(value) {
     return String(value == null ? "" : value).replace(/\u00a0/g, " ").trim();
   }
@@ -33,6 +39,28 @@
     return /^\d{12}$/.test(text) ? text : null;
   }
 
+<<<<<<< HEAD
+  function normalizedHeader(value) {
+    return clean(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  }
+
+  function findHeaderInformation(rows) {
+    const maximum = Math.min(rows.length, 10);
+    for (let rowIndex = 0; rowIndex < maximum; rowIndex += 1) {
+      const headers = rows[rowIndex].map(normalizedHeader);
+      const nameColumn = headers.findIndex((value) =>
+        /^(name of (the )?student|student name|name of learner|learner name|pupil name)$/.test(value) ||
+        ((/\bstudent\b|\blearner\b|\bpupil\b/).test(value) && /\bname\b/.test(value))
+      );
+      const lrnColumn = headers.findIndex((value) =>
+        value === "lrn" || /learner reference (number|no)/.test(value)
+      );
+      if (nameColumn >= 0 || lrnColumn >= 0) {
+        return { rowIndex, headers, nameColumn, lrnColumn };
+      }
+    }
+    return { rowIndex: -1, headers: [], nameColumn: -1, lrnColumn: -1 };
+=======
   function looksLikeHeader(row) {
     const joined = row.join(" ").toLowerCase();
     return /\blrn\b/.test(joined) || /name\s+of\s+student/.test(joined) || /student\s+name/.test(joined);
@@ -43,6 +71,7 @@
       const value = clean(cell).toLowerCase();
       return /student/.test(value) && /name/.test(value);
     });
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
   }
 
   function plausibleName(value) {
@@ -62,17 +91,49 @@
 
   function detectStudents(rows) {
     if (!rows.length) return { students: [], rejected: [] };
+<<<<<<< HEAD
+    const header = findHeaderInformation(rows);
+    const start = header.rowIndex >= 0 ? header.rowIndex + 1 : 0;
+    const ignoredNameColumns = new Set();
+    header.headers.forEach((value, index) => {
+      if (/parent|guardian|mother|father|email|phone|contact|address|number/.test(value)) ignoredNameColumns.add(index);
+    });
+=======
     let nameColumn = -1;
     let start = 0;
     if (looksLikeHeader(rows[0])) {
       nameColumn = findNameColumn(rows[0]);
       start = 1;
     }
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
 
     const found = [];
     const rejected = [];
     for (let rowIndex = start; rowIndex < rows.length; rowIndex += 1) {
       const row = rows[rowIndex];
+<<<<<<< HEAD
+      const exactValues = row.map((cell, column) => ({ value: exactLrn(cell), column })).filter((item) => item.value);
+      let selectedLrn = null;
+      if (header.lrnColumn >= 0 && exactLrn(row[header.lrnColumn])) {
+        selectedLrn = { value: exactLrn(row[header.lrnColumn]), column: header.lrnColumn };
+      } else if (exactValues.length === 1) {
+        selectedLrn = exactValues[0];
+      }
+      if (!selectedLrn) {
+        rejected.push({
+          row: rowIndex + 1,
+          reason: exactValues.length > 1 ? "multiple 12-digit values and no clear LRN column" : "no exact 12-digit LRN"
+        });
+        continue;
+      }
+
+      const lrn = selectedLrn.value;
+      let name = header.nameColumn >= 0 ? clean(row[header.nameColumn]) : "";
+      if (!plausibleName(name)) {
+        name = row.find((cell, index) =>
+          index !== selectedLrn.column && !ignoredNameColumns.has(index) && plausibleName(cell)
+        ) || "";
+=======
       const lrns = row.map(exactLrn).filter(Boolean);
       if (lrns.length !== 1) {
         rejected.push({ row: rowIndex + 1, reason: lrns.length ? "more than one 12-digit value" : "no exact 12-digit LRN" });
@@ -84,6 +145,7 @@
       let name = nameColumn >= 0 ? clean(row[nameColumn]) : "";
       if (!plausibleName(name)) {
         name = row.find((cell, index) => index !== lrnColumn && plausibleName(cell)) || "";
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
       }
       if (!name) {
         rejected.push({ row: rowIndex + 1, reason: "student name not found" });
@@ -94,6 +156,38 @@
     return { students: found, rejected };
   }
 
+<<<<<<< HEAD
+  function renderPreview(result) {
+    lastDetection = result;
+    students = result.students;
+    const status = document.getElementById("status");
+    const results = document.getElementById("results");
+    const body = document.getElementById("studentRows");
+    const exportButton = document.getElementById("exportButton");
+    body.textContent = "";
+
+    students.forEach((student, index) => {
+      const tr = document.createElement("tr");
+      [String(index + 1), student.name, student.lrn, "Ready"].forEach((value) => {
+        const td = document.createElement("td");
+        td.textContent = value;
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+
+    document.getElementById("studentCount").textContent =
+      `${students.length} student${students.length === 1 ? "" : "s"} will be created.`;
+    results.hidden = students.length === 0;
+    exportButton.disabled = students.length === 0;
+    status.textContent = `${students.length} valid student${students.length === 1 ? "" : "s"} detected` +
+      (result.rejected.length ? `; ${result.rejected.length} unrelated or invalid row${result.rejected.length === 1 ? "" : "s"} ignored.` : ".");
+  }
+
+  function detectFromPaste() {
+    const rows = parseRows(document.getElementById("pasteBox").value);
+    renderPreview(detectStudents(rows));
+=======
   function createInputTable(count) {
     const container = document.getElementById("tableContainer");
     container.textContent = "";
@@ -183,6 +277,7 @@
 
   function updateFromTable() {
     renderPreview(detectStudents(rowsFromTable()));
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
   }
 
   // Minimal standards-compliant QR encoder for an exact 12-digit numeric LRN.
@@ -556,11 +651,15 @@
   }
 
   async function exportImages() {
+<<<<<<< HEAD
+    detectFromPaste();
+=======
     if (inputSource === "paste") {
       renderPreview(detectStudents(parseRows(document.getElementById("pasteBox").value)));
     } else {
       updateFromTable();
     }
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
     if (!students.length) {
       alert("No valid student rows were found. Each row needs one exact 12-digit LRN and a student name.");
       return;
@@ -586,11 +685,44 @@
       status.textContent = `Export failed: ${error.message}`;
       alert(`Export failed: ${error.message}`);
     } finally {
+<<<<<<< HEAD
+      button.disabled = students.length === 0;
+=======
       button.disabled = false;
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
     }
   }
 
   function initialize() {
+<<<<<<< HEAD
+    const pasteBox = document.getElementById("pasteBox");
+    let detectionTimer = 0;
+    pasteBox.addEventListener("input", () => {
+      clearTimeout(detectionTimer);
+      detectionTimer = setTimeout(detectFromPaste, 200);
+    });
+    document.getElementById("detectButton").addEventListener("click", detectFromPaste);
+    document.getElementById("clearButton").addEventListener("click", () => {
+      pasteBox.value = "";
+      students = [];
+      lastDetection = { students: [], rejected: [] };
+      document.getElementById("studentRows").textContent = "";
+      document.getElementById("results").hidden = true;
+      document.getElementById("exportButton").disabled = true;
+      document.getElementById("status").textContent = "Paste new spreadsheet data to begin.";
+      pasteBox.focus();
+    });
+    document.getElementById("exportButton").addEventListener("click", exportImages);
+
+    const video = document.getElementById("tutorialVideo");
+    let pausedAtOneMinute = false;
+    video.addEventListener("timeupdate", () => {
+      if (!pausedAtOneMinute && video.currentTime >= 60) {
+        pausedAtOneMinute = true;
+        video.pause();
+      }
+    });
+=======
     document.getElementById("createTable").addEventListener("click", () => {
       const count = Math.max(1, Math.min(500, Number(document.getElementById("studentCount").value) || 1));
       createInputTable(count);
@@ -612,6 +744,7 @@
     });
     document.getElementById("exportButton").addEventListener("click", exportImages);
     createInputTable(Number(document.getElementById("studentCount").value));
+>>>>>>> d07ed3834d2140e0ac82aaf6031142c44770c39e
   }
 
   if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", initialize);
