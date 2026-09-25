@@ -1,1250 +1,621 @@
-const pasteBox = document.getElementById("pasteBox");
-const analyzeBtn = document.getElementById("analyzeBtn");
-const exportBtn = document.getElementById("exportBtn");
-const detectedBody = document.getElementById("detectedBody");
-const statusText = document.getElementById("status");
+(function () {
+  "use strict";
 
-const PAGE_WIDTH = 1414;
-const PAGE_HEIGHT = 2000;
+  // The old page was 1414 x 2000. Every measurement below is exactly 4x,
+  // so Canva receives a much larger image without changing the layout.
+  const SCALE = 4;
+  const PAGE_WIDTH = 1414 * SCALE;
+  const PAGE_HEIGHT = 2000 * SCALE;
+  const COLUMNS = 5;
+  const ROWS = 7;
+  const PER_PAGE = COLUMNS * ROWS;
+  const CARD_WIDTH = 247 * SCALE;
+  const CARD_HEIGHT = 259 * SCALE;
+  const COLUMN_GAP = 27 * SCALE;
+  const ROW_GAP = 24 * SCALE;
+  const LEFT_MARGIN = 35 * SCALE;
+  const TOP_MARGIN = 20 * SCALE;
+  const QR_MODULE_PIXELS = 30; // integer scaling: never blur QR module edges
+  const QR_MODULES_WITH_QUIET_ZONE = 29; // 21 modules + four white modules per side
+  const QR_SIZE = QR_MODULE_PIXELS * QR_MODULES_WITH_QUIET_ZONE;
+  const FIELD_COUNT = 5;
+  const DEFAULT_HEADERS = ["NAME OF STUDENT", "NAME OF PARENT", "EMAIL ADDRESS", "PHONE NO. (PARENT)", "LRN"];
 
-const CARDS_PER_ROW = 5;
-const ROWS_PER_PAGE = 7;
-const CARDS_PER_PAGE = CARDS_PER_ROW * ROWS_PER_PAGE;
+  let students = [];
+  let inputSource = "table";
 
-const LEFT_MARGIN = 35;
-const TOP_MARGIN = 22;
-const CARD_WIDTH = 247;
-const CARD_HEIGHT = 259;
-const H_GAP = 27;
-const V_GAP = 20;
-
-const QR_MODULE_SCALE = 8;
-const QR_QUIET_ZONE = 4;
-const QR_MODULE_COUNT = 21;
-const QR_SIZE = (QR_MODULE_COUNT + QR_QUIET_ZONE * 2) * QR_MODULE_SCALE;
-const QR_TOP_PADDING = 8;
-
-let detectedStudents = [];
-
-/* =========================================================
-   DATA DETECTION
-   ========================================================= */
-
-analyzeBtn.addEventListener("click", analyzePastedData);
-
-pasteBox.addEventListener("paste", () => {
-  setTimeout(analyzePastedData, 0);
-});
-
-function normalizeLines(text) {
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .filter(line => line.trim() !== "")
-    .map(line => line.split("\t"));
-}
-
-function cleanCell(value) {
-  return String(value ?? "").trim();
-}
-
-function normalizeHeader(value) {
-  return cleanCell(value)
-    .toUpperCase()
-    .replace(/[._()-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isLrn(value) {
-  return /^\d{12}$/.test(cleanCell(value));
-}
-
-function isEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanCell(value));
-}
-
-function digitsOnly(value) {
-  return cleanCell(value).replace(/\D/g, "");
-}
-
-function looksLikePhone(value) {
-  const raw = cleanCell(value);
-
-  if (/^\+?\d[\d\s-]{8,}$/.test(raw)) {
-    return true;
+  function clean(value) {
+    return String(value == null ? "" : value).replace(/\u00a0/g, " ").trim();
   }
 
-  const digits = digitsOnly(raw);
-  return digits.length >= 10 && digits.length <= 13;
-}
-
-function looksLikeName(value) {
-  const v = cleanCell(value);
-
-  if (!v) return false;
-  if (isLrn(v)) return false;
-  if (isEmail(v)) return false;
-  if (looksLikePhone(v)) return false;
-  if (/^\d+$/.test(v)) return false;
-
-  return /[A-Za-zÀ-ÿ]/.test(v);
-}
-
-function findHeaderMap(rows) {
-  const maxRowsToCheck = Math.min(rows.length, 5);
-
-  for (let r = 0; r < maxRowsToCheck; r++) {
-    const headers = rows[r].map(normalizeHeader);
-
-    let nameCol = -1;
-    let lrnCol = -1;
-
-    headers.forEach((header, index) => {
-      if (
-        header === "NAME OF STUDENT" ||
-        header === "STUDENT NAME" ||
-        header === "NAME" ||
-        header.includes("STUDENT NAME") ||
-        header.includes("NAME OF STUDENT")
-      ) {
-        nameCol = index;
-      }
-
-      if (
-        header === "LRN" ||
-        header.includes("LEARNER REFERENCE NUMBER") ||
-        header.includes("LEARNER REFERENCE NO")
-      ) {
-        lrnCol = index;
-      }
-    });
-
-    if (nameCol !== -1 || lrnCol !== -1) {
-      return {
-        headerRow: r,
-        nameCol,
-        lrnCol
-      };
-    }
+  function exactLrn(value) {
+    const text = clean(value).replace(/^['\u2019]/, "");
+    return /^\d{12}$/.test(text) ? text : null;
   }
 
-  return null;
-}
-
-function findLrnInRow(row, preferredLrnCol = -1) {
-  if (preferredLrnCol >= 0 && preferredLrnCol < row.length) {
-    const candidate = cleanCell(row[preferredLrnCol]);
-
-    if (isLrn(candidate)) {
-      return {
-        lrn: candidate,
-        colIndex: preferredLrnCol
-      };
-    }
+  function looksLikeHeader(row) {
+    const joined = row.join(" ").toLowerCase();
+    return /\blrn\b/.test(joined) || /name\s+of\s+student/.test(joined) || /student\s+name/.test(joined);
   }
 
-  for (let i = 0; i < row.length; i++) {
-    const value = cleanCell(row[i]);
-
-    if (isLrn(value)) {
-      return {
-        lrn: value,
-        colIndex: i
-      };
-    }
-  }
-
-  return null;
-}
-
-function findStudentName(row, lrnColumn, preferredNameCol = -1) {
-  if (preferredNameCol >= 0 && preferredNameCol < row.length) {
-    const preferred = cleanCell(row[preferredNameCol]);
-
-    if (looksLikeName(preferred)) {
-      return preferred;
-    }
-  }
-
-  for (let i = 0; i < row.length; i++) {
-    if (i === lrnColumn) continue;
-
-    const value = cleanCell(row[i]);
-
-    if (looksLikeName(value)) {
-      return value;
-    }
-  }
-
-  return "";
-}
-
-function analyzePastedData() {
-  const text = pasteBox.value;
-
-  if (!text.trim()) {
-    detectedStudents = [];
-    renderDetectedStudents();
-    statusText.textContent = "Paste data from Google Sheets first.";
-    return;
-  }
-
-  const rows = normalizeLines(text);
-  const headerMap = findHeaderMap(rows);
-
-  const startRow = headerMap ? headerMap.headerRow + 1 : 0;
-  const preferredNameCol = headerMap ? headerMap.nameCol : -1;
-  const preferredLrnCol = headerMap ? headerMap.lrnCol : -1;
-
-  const results = [];
-
-  for (let r = startRow; r < rows.length; r++) {
-    const row = rows[r];
-    const lrnMatch = findLrnInRow(row, preferredLrnCol);
-
-    if (!lrnMatch) {
-      continue;
-    }
-
-    const name = findStudentName(
-      row,
-      lrnMatch.colIndex,
-      preferredNameCol
-    );
-
-    results.push({
-      sourceRow: r + 1,
-      name,
-      lrn: lrnMatch.lrn,
-      valid: Boolean(name) && isLrn(lrnMatch.lrn)
+  function findNameColumn(header) {
+    return header.findIndex((cell) => {
+      const value = clean(cell).toLowerCase();
+      return /student/.test(value) && /name/.test(value);
     });
   }
 
-  const seen = new Set();
+  function plausibleName(value) {
+    const text = clean(value);
+    if (!text || exactLrn(text) || /@/.test(text) || /^\+?[\d\s().-]{7,}$/.test(text)) return false;
+    if (/^(lrn|email|phone|contact|parent|name|student|no\.?|number)$/i.test(text)) return false;
+    return /[a-zA-ZÀ-ÿ]/.test(text);
+  }
 
-  detectedStudents = results.filter(student => {
-    if (seen.has(student.lrn)) {
-      return false;
+  function parseRows(text) {
+    return String(text || "")
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((line) => line.split("\t").map(clean))
+      .filter((row) => row.some(Boolean));
+  }
+
+  function detectStudents(rows) {
+    if (!rows.length) return { students: [], rejected: [] };
+    let nameColumn = -1;
+    let start = 0;
+    if (looksLikeHeader(rows[0])) {
+      nameColumn = findNameColumn(rows[0]);
+      start = 1;
     }
 
-    seen.add(student.lrn);
-    return true;
-  });
-
-  renderDetectedStudents();
-
-  const validCount = detectedStudents.filter(student => student.valid).length;
-  const missingNameCount = detectedStudents.filter(student => !student.name).length;
-
-  statusText.textContent =
-    `Detected ${detectedStudents.length} LRN row(s). ` +
-    `${validCount} student(s) are ready.` +
-    (missingNameCount
-      ? ` ${missingNameCount} row(s) have an LRN but no student name was identified.`
-      : "");
-}
-
-function renderDetectedStudents() {
-  detectedBody.innerHTML = "";
-
-  detectedStudents.forEach(student => {
-    const tr = document.createElement("tr");
-
-    const nameTd = document.createElement("td");
-    const lrnTd = document.createElement("td");
-    const statusTd = document.createElement("td");
-
-    nameTd.textContent = student.name || "(name not detected)";
-    lrnTd.textContent = student.lrn;
-    statusTd.textContent = student.valid ? "READY" : "CHECK NAME";
-
-    tr.appendChild(nameTd);
-    tr.appendChild(lrnTd);
-    tr.appendChild(statusTd);
-
-    detectedBody.appendChild(tr);
-  });
-}
-
-/* =========================================================
-   BUILT-IN QR GENERATOR
-   Fixed QR Version 1-L, numeric mode.
-   This is enough for exact 12-digit LRNs and needs NO CDN.
-   ========================================================= */
-
-const GF_EXP = new Array(512).fill(0);
-const GF_LOG = new Array(256).fill(0);
-
-(function buildGaloisTables() {
-  let x = 1;
-
-  for (let i = 0; i < 255; i++) {
-    GF_EXP[i] = x;
-    GF_LOG[x] = i;
-
-    x <<= 1;
-
-    if (x & 0x100) {
-      x ^= 0x11d;
-    }
-  }
-
-  for (let i = 255; i < 512; i++) {
-    GF_EXP[i] = GF_EXP[i - 255];
-  }
-})();
-
-function gfMultiply(a, b) {
-  if (a === 0 || b === 0) return 0;
-  return GF_EXP[GF_LOG[a] + GF_LOG[b]];
-}
-
-function polynomialMultiply(a, b) {
-  const result = new Array(a.length + b.length - 1).fill(0);
-
-  for (let i = 0; i < a.length; i++) {
-    for (let j = 0; j < b.length; j++) {
-      result[i + j] ^= gfMultiply(a[i], b[j]);
-    }
-  }
-
-  return result;
-}
-
-function createReedSolomon(dataCodewords, ecCount) {
-  let generator = [1];
-
-  for (let i = 0; i < ecCount; i++) {
-    generator = polynomialMultiply(generator, [1, GF_EXP[i]]);
-  }
-
-  const message = dataCodewords.concat(new Array(ecCount).fill(0));
-
-  for (let i = 0; i < dataCodewords.length; i++) {
-    const factor = message[i];
-
-    if (factor === 0) continue;
-
-    const logFactor = GF_LOG[factor];
-
-    for (let j = 0; j < generator.length; j++) {
-      const coefficient = generator[j];
-
-      if (coefficient !== 0) {
-        message[i + j] ^=
-          GF_EXP[(logFactor + GF_LOG[coefficient]) % 255];
-      }
-    }
-  }
-
-  return message.slice(dataCodewords.length);
-}
-
-function appendBits(bits, value, length) {
-  for (let i = length - 1; i >= 0; i--) {
-    bits.push((value >> i) & 1);
-  }
-}
-
-function createQrCodewords(lrn) {
-  if (!/^\d{12}$/.test(lrn)) {
-    throw new Error(`Invalid LRN: ${lrn}`);
-  }
-
-  const bits = [];
-
-  // Numeric mode indicator: 0001
-  appendBits(bits, 0b0001, 4);
-
-  // Character count for Version 1-9 numeric mode: 10 bits
-  appendBits(bits, lrn.length, 10);
-
-  // 12 digits = four groups of 3 digits, each encoded in 10 bits
-  for (let i = 0; i < lrn.length; i += 3) {
-    const group = lrn.slice(i, i + 3);
-
-    if (group.length === 3) {
-      appendBits(bits, Number(group), 10);
-    } else if (group.length === 2) {
-      appendBits(bits, Number(group), 7);
-    } else {
-      appendBits(bits, Number(group), 4);
-    }
-  }
-
-  const DATA_CODEWORDS = 19;
-  const DATA_CAPACITY_BITS = DATA_CODEWORDS * 8;
-
-  const terminatorLength = Math.min(
-    4,
-    DATA_CAPACITY_BITS - bits.length
-  );
-
-  for (let i = 0; i < terminatorLength; i++) {
-    bits.push(0);
-  }
-
-  while (bits.length % 8 !== 0) {
-    bits.push(0);
-  }
-
-  const data = [];
-
-  for (let i = 0; i < bits.length; i += 8) {
-    let value = 0;
-
-    for (let j = 0; j < 8; j++) {
-      value = (value << 1) | bits[i + j];
-    }
-
-    data.push(value);
-  }
-
-  const padBytes = [0xec, 0x11];
-  let padIndex = 0;
-
-  while (data.length < DATA_CODEWORDS) {
-    data.push(padBytes[padIndex % 2]);
-    padIndex++;
-  }
-
-  const errorCorrection = createReedSolomon(data, 7);
-
-  return data.concat(errorCorrection);
-}
-
-function bchDigit(value) {
-  let digit = 0;
-
-  while (value !== 0) {
-    digit++;
-    value >>>= 1;
-  }
-
-  return digit;
-}
-
-function getFormatBits(data) {
-  const G15 = 0x0537;
-  const G15_MASK = 0x5412;
-
-  let d = data << 10;
-
-  while (bchDigit(d) - bchDigit(G15) >= 0) {
-    d ^= G15 << (bchDigit(d) - bchDigit(G15));
-  }
-
-  return ((data << 10) | d) ^ G15_MASK;
-}
-
-function setupFinderPattern(matrix, row, col) {
-  const size = matrix.length;
-
-  for (let r = -1; r <= 7; r++) {
-    const rr = row + r;
-
-    if (rr < 0 || rr >= size) continue;
-
-    for (let c = -1; c <= 7; c++) {
-      const cc = col + c;
-
-      if (cc < 0 || cc >= size) continue;
-
-      const dark =
-        (
-          r >= 0 &&
-          r <= 6 &&
-          (c === 0 || c === 6)
-        ) ||
-        (
-          c >= 0 &&
-          c <= 6 &&
-          (r === 0 || r === 6)
-        ) ||
-        (
-          r >= 2 &&
-          r <= 4 &&
-          c >= 2 &&
-          c <= 4
-        );
-
-      matrix[rr][cc] = dark;
-    }
-  }
-}
-
-function setupTimingPatterns(matrix) {
-  const size = matrix.length;
-
-  for (let r = 8; r < size - 8; r++) {
-    if (matrix[r][6] === null) {
-      matrix[r][6] = r % 2 === 0;
-    }
-  }
-
-  for (let c = 8; c < size - 8; c++) {
-    if (matrix[6][c] === null) {
-      matrix[6][c] = c % 2 === 0;
-    }
-  }
-}
-
-function setupFormatInformation(matrix, maskPattern) {
-  const size = matrix.length;
-
-  // QR error correction level L uses format value 01.
-  const errorCorrectionLevelL = 1;
-  const formatData = (errorCorrectionLevelL << 3) | maskPattern;
-  const bits = getFormatBits(formatData);
-
-  for (let i = 0; i < 15; i++) {
-    const dark = ((bits >> i) & 1) === 1;
-
-    if (i < 6) {
-      matrix[i][8] = dark;
-    } else if (i < 8) {
-      matrix[i + 1][8] = dark;
-    } else {
-      matrix[size - 15 + i][8] = dark;
-    }
-
-    if (i < 8) {
-      matrix[8][size - i - 1] = dark;
-    } else if (i < 9) {
-      matrix[8][15 - i] = dark;
-    } else {
-      matrix[8][15 - i - 1] = dark;
-    }
-  }
-
-  // Fixed dark module
-  matrix[size - 8][8] = true;
-}
-
-function maskPattern0(row, col) {
-  return (row + col) % 2 === 0;
-}
-
-function mapQrData(matrix, codewords) {
-  const size = matrix.length;
-
-  let row = size - 1;
-  let direction = -1;
-  let byteIndex = 0;
-  let bitIndex = 7;
-
-  for (let col = size - 1; col > 0; col -= 2) {
-    if (col === 6) {
-      col--;
-    }
-
-    while (true) {
-      for (let offset = 0; offset < 2; offset++) {
-        const currentCol = col - offset;
-
-        if (matrix[row][currentCol] !== null) {
-          continue;
-        }
-
-        let dark = false;
-
-        if (byteIndex < codewords.length) {
-          dark =
-            ((codewords[byteIndex] >>> bitIndex) & 1) === 1;
-        }
-
-        if (maskPattern0(row, currentCol)) {
-          dark = !dark;
-        }
-
-        matrix[row][currentCol] = dark;
-
-        bitIndex--;
-
-        if (bitIndex === -1) {
-          byteIndex++;
-          bitIndex = 7;
-        }
+    const found = [];
+    const rejected = [];
+    for (let rowIndex = start; rowIndex < rows.length; rowIndex += 1) {
+      const row = rows[rowIndex];
+      const lrns = row.map(exactLrn).filter(Boolean);
+      if (lrns.length !== 1) {
+        rejected.push({ row: rowIndex + 1, reason: lrns.length ? "more than one 12-digit value" : "no exact 12-digit LRN" });
+        continue;
       }
 
-      row += direction;
-
-      if (row < 0 || row >= size) {
-        row -= direction;
-        direction = -direction;
-        break;
+      const lrn = lrns[0];
+      const lrnColumn = row.findIndex((cell) => exactLrn(cell) === lrn);
+      let name = nameColumn >= 0 ? clean(row[nameColumn]) : "";
+      if (!plausibleName(name)) {
+        name = row.find((cell, index) => index !== lrnColumn && plausibleName(cell)) || "";
       }
-    }
-  }
-}
-
-function createQrMatrix(lrn) {
-  const size = QR_MODULE_COUNT;
-
-  const matrix = Array.from(
-    { length: size },
-    () => new Array(size).fill(null)
-  );
-
-  setupFinderPattern(matrix, 0, 0);
-  setupFinderPattern(matrix, size - 7, 0);
-  setupFinderPattern(matrix, 0, size - 7);
-
-  setupTimingPatterns(matrix);
-
-  // Fixed mask pattern 0
-  setupFormatInformation(matrix, 0);
-
-  const codewords = createQrCodewords(lrn);
-
-  mapQrData(matrix, codewords);
-
-  return matrix;
-}
-
-function createQrCanvas(lrn) {
-  const matrix = createQrMatrix(lrn);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = QR_SIZE;
-  canvas.height = QR_SIZE;
-
-  const ctx = canvas.getContext("2d");
-
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, QR_SIZE, QR_SIZE);
-
-  ctx.fillStyle = "#000000";
-
-  for (let row = 0; row < QR_MODULE_COUNT; row++) {
-    for (let col = 0; col < QR_MODULE_COUNT; col++) {
-      if (!matrix[row][col]) continue;
-
-      const x =
-        (col + QR_QUIET_ZONE) * QR_MODULE_SCALE;
-
-      const y =
-        (row + QR_QUIET_ZONE) * QR_MODULE_SCALE;
-
-      ctx.fillRect(
-        x,
-        y,
-        QR_MODULE_SCALE,
-        QR_MODULE_SCALE
-      );
-    }
-  }
-
-  return canvas;
-}
-
-/* =========================================================
-   PAGE / IMAGE GENERATION
-   ========================================================= */
-
-async function createPageCanvas(pageStudents) {
-  const canvas = document.createElement("canvas");
-
-  canvas.width = PAGE_WIDTH;
-  canvas.height = PAGE_HEIGHT;
-
-  const ctx = canvas.getContext("2d");
-
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, PAGE_WIDTH, PAGE_HEIGHT);
-
-  ctx.strokeStyle = "#000000";
-  ctx.lineWidth = 1;
-  ctx.fillStyle = "#000000";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  ctx.font = "15px Arial";
-
-  for (let i = 0; i < pageStudents.length; i++) {
-    const student = pageStudents[i];
-
-    const col = i % CARDS_PER_ROW;
-    const row = Math.floor(i / CARDS_PER_ROW);
-
-    const x =
-      LEFT_MARGIN + col * (CARD_WIDTH + H_GAP);
-
-    const y =
-      TOP_MARGIN + row * (CARD_HEIGHT + V_GAP);
-
-    ctx.strokeRect(
-      x,
-      y,
-      CARD_WIDTH,
-      CARD_HEIGHT
-    );
-
-    const qrCanvas = createQrCanvas(student.lrn);
-
-    const qrX =
-      x + Math.round((CARD_WIDTH - QR_SIZE) / 2);
-
-    const qrY =
-      y + QR_TOP_PADDING;
-
-    ctx.drawImage(
-      qrCanvas,
-      qrX,
-      qrY
-    );
-
-    const nameY =
-      y + CARD_HEIGHT - 10;
-
-    drawFittedText(
-      ctx,
-      student.name,
-      x + CARD_WIDTH / 2,
-      nameY,
-      CARD_WIDTH - 12,
-      15
-    );
-  }
-
-  return canvas;
-}
-
-function drawFittedText(
-  ctx,
-  text,
-  centerX,
-  baselineY,
-  maxWidth,
-  startFontSize
-) {
-  let fontSize = startFontSize;
-
-  while (fontSize >= 9) {
-    ctx.font = `${fontSize}px Arial`;
-
-    if (ctx.measureText(text).width <= maxWidth) {
-      break;
-    }
-
-    fontSize--;
-  }
-
-  ctx.fillText(
-    text,
-    centerX,
-    baselineY
-  );
-}
-
-function canvasToBlob(canvas) {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob(blob => {
-      if (!blob) {
-        reject(
-          new Error("Could not create PNG.")
-        );
-
-        return;
+      if (!name) {
+        rejected.push({ row: rowIndex + 1, reason: "student name not found" });
+        continue;
       }
-
-      resolve(blob);
-    }, "image/png");
-  });
-}
-
-function downloadBlob(blob, filename) {
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = filename;
-
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  setTimeout(() => {
-    URL.revokeObjectURL(url);
-  }, 1000);
-}
-
-/* =========================================================
-   BUILT-IN ZIP WRITER
-   Stores PNG files without compression.
-   No JSZip or CDN required.
-   ========================================================= */
-
-const CRC_TABLE = (() => {
-  const table = new Uint32Array(256);
-
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-
-    for (let k = 0; k < 8; k++) {
-      c =
-        (c & 1)
-          ? 0xedb88320 ^ (c >>> 1)
-          : c >>> 1;
+      found.push({ name, lrn, sourceRow: rowIndex + 1, cells: row.slice() });
     }
-
-    table[n] = c >>> 0;
+    return { students: found, rejected };
   }
 
-  return table;
-})();
-
-function crc32(bytes) {
-  let crc = 0xffffffff;
-
-  for (let i = 0; i < bytes.length; i++) {
-    crc =
-      CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^
-      (crc >>> 8);
-  }
-
-  return (crc ^ 0xffffffff) >>> 0;
-}
-
-function writeUint16(view, offset, value) {
-  view.setUint16(offset, value, true);
-}
-
-function writeUint32(view, offset, value) {
-  view.setUint32(offset, value >>> 0, true);
-}
-
-async function createZipBlob(files) {
-  const encoder = new TextEncoder();
-
-  const prepared = [];
-
-  for (const file of files) {
-    const filenameBytes = encoder.encode(file.filename);
-    const data = new Uint8Array(
-      await file.blob.arrayBuffer()
-    );
-
-    prepared.push({
-      filename: file.filename,
-      filenameBytes,
-      data,
-      crc: crc32(data)
+  function createInputTable(count) {
+    const container = document.getElementById("tableContainer");
+    container.textContent = "";
+    const table = document.createElement("table");
+    table.border = "1";
+    table.cellPadding = "4";
+    const head = document.createElement("thead");
+    const headRow = document.createElement("tr");
+    DEFAULT_HEADERS.forEach((label) => {
+      const th = document.createElement("th");
+      th.textContent = label;
+      headRow.appendChild(th);
     });
-  }
+    head.appendChild(headRow);
+    table.appendChild(head);
 
-  const localParts = [];
-  const centralParts = [];
-
-  let localOffset = 0;
-
-  for (const file of prepared) {
-    const localHeader =
-      new Uint8Array(
-        30 + file.filenameBytes.length
-      );
-
-    const localView =
-      new DataView(
-        localHeader.buffer
-      );
-
-    writeUint32(
-      localView,
-      0,
-      0x04034b50
-    );
-
-    writeUint16(
-      localView,
-      4,
-      20
-    );
-
-    writeUint16(
-      localView,
-      6,
-      0
-    );
-
-    writeUint16(
-      localView,
-      8,
-      0
-    );
-
-    writeUint16(
-      localView,
-      10,
-      0
-    );
-
-    writeUint16(
-      localView,
-      12,
-      0
-    );
-
-    writeUint32(
-      localView,
-      14,
-      file.crc
-    );
-
-    writeUint32(
-      localView,
-      18,
-      file.data.length
-    );
-
-    writeUint32(
-      localView,
-      22,
-      file.data.length
-    );
-
-    writeUint16(
-      localView,
-      26,
-      file.filenameBytes.length
-    );
-
-    writeUint16(
-      localView,
-      28,
-      0
-    );
-
-    localHeader.set(
-      file.filenameBytes,
-      30
-    );
-
-    localParts.push(
-      localHeader,
-      file.data
-    );
-
-    const centralHeader =
-      new Uint8Array(
-        46 + file.filenameBytes.length
-      );
-
-    const centralView =
-      new DataView(
-        centralHeader.buffer
-      );
-
-    writeUint32(
-      centralView,
-      0,
-      0x02014b50
-    );
-
-    writeUint16(
-      centralView,
-      4,
-      20
-    );
-
-    writeUint16(
-      centralView,
-      6,
-      20
-    );
-
-    writeUint16(
-      centralView,
-      8,
-      0
-    );
-
-    writeUint16(
-      centralView,
-      10,
-      0
-    );
-
-    writeUint16(
-      centralView,
-      12,
-      0
-    );
-
-    writeUint16(
-      centralView,
-      14,
-      0
-    );
-
-    writeUint32(
-      centralView,
-      16,
-      file.crc
-    );
-
-    writeUint32(
-      centralView,
-      20,
-      file.data.length
-    );
-
-    writeUint32(
-      centralView,
-      24,
-      file.data.length
-    );
-
-    writeUint16(
-      centralView,
-      28,
-      file.filenameBytes.length
-    );
-
-    writeUint16(
-      centralView,
-      30,
-      0
-    );
-
-    writeUint16(
-      centralView,
-      32,
-      0
-    );
-
-    writeUint16(
-      centralView,
-      34,
-      0
-    );
-
-    writeUint16(
-      centralView,
-      36,
-      0
-    );
-
-    writeUint32(
-      centralView,
-      38,
-      0
-    );
-
-    writeUint32(
-      centralView,
-      42,
-      localOffset
-    );
-
-    centralHeader.set(
-      file.filenameBytes,
-      46
-    );
-
-    centralParts.push(
-      centralHeader
-    );
-
-    localOffset +=
-      localHeader.length +
-      file.data.length;
-  }
-
-  const centralSize =
-    centralParts.reduce(
-      (sum, part) => sum + part.length,
-      0
-    );
-
-  const endRecord =
-    new Uint8Array(22);
-
-  const endView =
-    new DataView(
-      endRecord.buffer
-    );
-
-  writeUint32(
-    endView,
-    0,
-    0x06054b50
-  );
-
-  writeUint16(
-    endView,
-    4,
-    0
-  );
-
-  writeUint16(
-    endView,
-    6,
-    0
-  );
-
-  writeUint16(
-    endView,
-    8,
-    prepared.length
-  );
-
-  writeUint16(
-    endView,
-    10,
-    prepared.length
-  );
-
-  writeUint32(
-    endView,
-    12,
-    centralSize
-  );
-
-  writeUint32(
-    endView,
-    16,
-    localOffset
-  );
-
-  writeUint16(
-    endView,
-    20,
-    0
-  );
-
-  return new Blob(
-    [
-      ...localParts,
-      ...centralParts,
-      endRecord
-    ],
-    {
-      type: "application/zip"
-    }
-  );
-}
-
-/* =========================================================
-   EXPORT
-   ========================================================= */
-
-exportBtn.addEventListener("click", async () => {
-  try {
-    analyzePastedData();
-
-    const students =
-      detectedStudents.filter(
-        student => student.valid
-      );
-
-    if (students.length === 0) {
-      alert(
-        "No valid students were detected. Each student row needs an exact 12-digit LRN and a detectable student name."
-      );
-
-      return;
-    }
-
-    const incomplete =
-      detectedStudents.filter(
-        student => !student.valid
-      );
-
-    if (incomplete.length > 0) {
-      const proceed = confirm(
-        `${incomplete.length} row(s) have an LRN but no student name was identified.\n\n` +
-        `Those rows will not be exported.\n\nContinue with ${students.length} ready student(s)?`
-      );
-
-      if (!proceed) {
-        return;
+    const body = document.createElement("tbody");
+    for (let row = 0; row < count; row += 1) {
+      const tr = document.createElement("tr");
+      for (let column = 0; column < FIELD_COUNT; column += 1) {
+        const td = document.createElement("td");
+        const input = document.createElement("input");
+        input.type = "text";
+        input.autocomplete = "off";
+        input.dataset.row = String(row);
+        input.dataset.column = String(column);
+        input.addEventListener("paste", pasteIntoTable);
+        td.appendChild(input);
+        tr.appendChild(td);
       }
+      body.appendChild(tr);
     }
+    table.appendChild(body);
+    container.appendChild(table);
+  }
 
-    statusText.textContent =
-      "Generating QR codes...";
-
-    const pageCount =
-      Math.ceil(
-        students.length /
-        CARDS_PER_PAGE
-      );
-
-    const pages = [];
-
-    for (
-      let pageIndex = 0;
-      pageIndex < pageCount;
-      pageIndex++
-    ) {
-      const start =
-        pageIndex *
-        CARDS_PER_PAGE;
-
-      const end =
-        start +
-        CARDS_PER_PAGE;
-
-      const pageStudents =
-        students.slice(
-          start,
-          end
-        );
-
-      const canvas =
-        await createPageCanvas(
-          pageStudents
-        );
-
-      const blob =
-        await canvasToBlob(
-          canvas
-        );
-
-      pages.push({
-        filename:
-          pageCount === 1
-            ? "Student-QR-Codes.png"
-            : `Student-QR-Codes-${pageIndex + 1}.png`,
-        blob
+  function pasteIntoTable(event) {
+    const text = event.clipboardData && event.clipboardData.getData("text/plain");
+    if (!text || (!text.includes("\t") && !text.includes("\n") && !text.includes("\r"))) return;
+    event.preventDefault();
+    inputSource = "table";
+    const rows = parseRows(text);
+    const startRow = Number(event.target.dataset.row);
+    const startColumn = Number(event.target.dataset.column);
+    const requiredRows = startRow + rows.length;
+    const currentRows = document.querySelectorAll("#tableContainer tbody tr").length;
+    if (requiredRows > currentRows) createInputTable(requiredRows);
+    rows.forEach((row, r) => {
+      row.forEach((value, c) => {
+        const column = startColumn + c;
+        if (column >= FIELD_COUNT) return;
+        const input = document.querySelector(`#tableContainer input[data-row="${startRow + r}"][data-column="${column}"]`);
+        if (input) input.value = value;
       });
+    });
+    updateFromTable();
+  }
+
+  function rowsFromTable() {
+    return Array.from(document.querySelectorAll("#tableContainer tbody tr"))
+      .map((tr) => Array.from(tr.querySelectorAll("input")).map((input) => clean(input.value)))
+      .filter((row) => row.some(Boolean));
+  }
+
+  function renderPreview(result) {
+    students = result.students;
+    const status = document.getElementById("status");
+    status.textContent = `${students.length} valid student${students.length === 1 ? "" : "s"} detected` +
+      (result.rejected.length ? `; ${result.rejected.length} row${result.rejected.length === 1 ? "" : "s"} skipped.` : ".");
+
+    let preview = document.getElementById("preview");
+    if (preview) preview.remove();
+    preview = document.createElement("div");
+    preview.id = "preview";
+    const heading = document.createElement("h2");
+    heading.textContent = "Detected students";
+    preview.appendChild(heading);
+    const list = document.createElement("ol");
+    students.forEach((student) => {
+      const item = document.createElement("li");
+      item.textContent = `${student.name} — ${student.lrn}`;
+      list.appendChild(item);
+    });
+    preview.appendChild(list);
+    document.getElementById("tableContainer").after(preview);
+  }
+
+  function updateFromTable() {
+    renderPreview(detectStudents(rowsFromTable()));
+  }
+
+  // Minimal standards-compliant QR encoder for an exact 12-digit numeric LRN.
+  // It creates a Version 1-M QR (21 x 21 modules) with Reed-Solomon correction.
+  const GF_EXP = new Uint8Array(512);
+  const GF_LOG = new Uint8Array(256);
+  (function buildGaloisTables() {
+    let value = 1;
+    for (let i = 0; i < 255; i += 1) {
+      GF_EXP[i] = value;
+      GF_LOG[value] = i;
+      value <<= 1;
+      if (value & 0x100) value ^= 0x11d;
     }
+    for (let i = 255; i < 512; i += 1) GF_EXP[i] = GF_EXP[i - 255];
+  }());
 
-    if (pages.length === 1) {
-      downloadBlob(
-        pages[0].blob,
-        pages[0].filename
-      );
+  function gfMultiply(a, b) {
+    return a && b ? GF_EXP[GF_LOG[a] + GF_LOG[b]] : 0;
+  }
 
-      statusText.textContent =
-        `Done. Generated ${students.length} QR code(s).`;
+  function generatorPolynomial(degree) {
+    let result = [1];
+    for (let i = 0; i < degree; i += 1) {
+      const next = new Array(result.length + 1).fill(0);
+      for (let j = 0; j < result.length; j += 1) {
+        next[j] ^= result[j];
+        next[j + 1] ^= gfMultiply(result[j], GF_EXP[i]);
+      }
+      result = next;
+    }
+    return result;
+  }
 
+  function reedSolomon(data, degree) {
+    const generator = generatorPolynomial(degree);
+    const message = data.concat(new Array(degree).fill(0));
+    for (let i = 0; i < data.length; i += 1) {
+      const factor = message[i];
+      if (!factor) continue;
+      for (let j = 0; j < generator.length; j += 1) {
+        message[i + j] ^= gfMultiply(generator[j], factor);
+      }
+    }
+    return message.slice(data.length);
+  }
+
+  function appendBits(target, value, length) {
+    for (let bit = length - 1; bit >= 0; bit -= 1) target.push((value >>> bit) & 1);
+  }
+
+  function makeCodewords(lrn) {
+    if (!/^\d{12}$/.test(lrn)) throw new Error("Every LRN must contain exactly 12 digits.");
+    const bits = [];
+    appendBits(bits, 0x1, 4); // numeric mode
+    appendBits(bits, lrn.length, 10); // Version 1 numeric length
+    for (let i = 0; i < lrn.length; i += 3) {
+      const group = lrn.slice(i, i + 3);
+      appendBits(bits, Number(group), group.length === 3 ? 10 : group.length === 2 ? 7 : 4);
+    }
+    const capacity = 16 * 8; // Version 1-M data capacity
+    appendBits(bits, 0, Math.min(4, capacity - bits.length));
+    while (bits.length % 8) bits.push(0);
+    const data = [];
+    for (let i = 0; i < bits.length; i += 8) {
+      let byte = 0;
+      for (let j = 0; j < 8; j += 1) byte = (byte << 1) | bits[i + j];
+      data.push(byte);
+    }
+    for (let pad = 0; data.length < 16; pad += 1) data.push(pad % 2 ? 0x11 : 0xec);
+    return data.concat(reedSolomon(data, 10));
+  }
+
+  function markFinder(matrix, functional, left, top) {
+    const size = matrix.length;
+    for (let y = -1; y <= 7; y += 1) {
+      for (let x = -1; x <= 7; x += 1) {
+        const xx = left + x;
+        const yy = top + y;
+        if (xx < 0 || yy < 0 || xx >= size || yy >= size) continue;
+        const black = x >= 0 && x <= 6 && y >= 0 && y <= 6 &&
+          (x === 0 || x === 6 || y === 0 || y === 6 || (x >= 2 && x <= 4 && y >= 2 && y <= 4));
+        matrix[yy][xx] = black;
+        functional[yy][xx] = true;
+      }
+    }
+  }
+
+  function formatBits(mask) {
+    const data = mask; // Error correction M = binary 00
+    let remainder = data << 10;
+    for (let bit = 14; bit >= 10; bit -= 1) {
+      if ((remainder >>> bit) & 1) remainder ^= 0x537 << (bit - 10);
+    }
+    return ((data << 10) | remainder) ^ 0x5412;
+  }
+
+  function setFormat(matrix, functional, mask) {
+    const size = matrix.length;
+    const value = formatBits(mask);
+    const set = (x, y, bit) => {
+      matrix[y][x] = ((value >>> bit) & 1) !== 0;
+      functional[y][x] = true;
+    };
+    for (let i = 0; i <= 5; i += 1) set(8, i, i);
+    set(8, 7, 6);
+    set(8, 8, 7);
+    set(7, 8, 8);
+    for (let i = 9; i < 15; i += 1) set(14 - i, 8, i);
+    for (let i = 0; i < 8; i += 1) set(size - 1 - i, 8, i);
+    for (let i = 8; i < 15; i += 1) set(8, size - 15 + i, i);
+    matrix[size - 8][8] = true;
+    functional[size - 8][8] = true;
+  }
+
+  function maskCondition(mask, x, y) {
+    switch (mask) {
+      case 0: return (x + y) % 2 === 0;
+      case 1: return y % 2 === 0;
+      case 2: return x % 3 === 0;
+      case 3: return (x + y) % 3 === 0;
+      case 4: return (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0;
+      case 5: return (x * y) % 2 + (x * y) % 3 === 0;
+      case 6: return ((x * y) % 2 + (x * y) % 3) % 2 === 0;
+      default: return ((x + y) % 2 + (x * y) % 3) % 2 === 0;
+    }
+  }
+
+  function penalty(matrix) {
+    const size = matrix.length;
+    let score = 0;
+    const linePenalty = (getter) => {
+      for (let a = 0; a < size; a += 1) {
+        let runColor = getter(a, 0);
+        let runLength = 1;
+        for (let b = 1; b < size; b += 1) {
+          const color = getter(a, b);
+          if (color === runColor) runLength += 1;
+          else {
+            if (runLength >= 5) score += 3 + runLength - 5;
+            runColor = color;
+            runLength = 1;
+          }
+        }
+        if (runLength >= 5) score += 3 + runLength - 5;
+      }
+    };
+    linePenalty((row, column) => matrix[row][column]);
+    linePenalty((column, row) => matrix[row][column]);
+    for (let y = 0; y < size - 1; y += 1) {
+      for (let x = 0; x < size - 1; x += 1) {
+        const color = matrix[y][x];
+        if (matrix[y][x + 1] === color && matrix[y + 1][x] === color && matrix[y + 1][x + 1] === color) score += 3;
+      }
+    }
+    const finderPattern = [true, false, true, true, true, false, true];
+    const scanPatterns = (getter) => {
+      for (let a = 0; a < size; a += 1) {
+        for (let b = 0; b <= size - 7; b += 1) {
+          if (!finderPattern.every((value, i) => getter(a, b + i) === value)) continue;
+          const before = b >= 4 && [1, 2, 3, 4].every((i) => !getter(a, b - i));
+          const after = b + 10 < size && [7, 8, 9, 10].every((i) => !getter(a, b + i));
+          if (before || after) score += 40;
+        }
+      }
+    };
+    scanPatterns((row, column) => matrix[row][column]);
+    scanPatterns((column, row) => matrix[row][column]);
+    const dark = matrix.flat().filter(Boolean).length;
+    score += Math.floor(Math.abs(dark * 20 - size * size * 10) / (size * size)) * 10;
+    return score;
+  }
+
+  function createQrMatrix(lrn) {
+    const size = 21;
+    const base = Array.from({ length: size }, () => new Array(size).fill(false));
+    const functional = Array.from({ length: size }, () => new Array(size).fill(false));
+    markFinder(base, functional, 0, 0);
+    markFinder(base, functional, size - 7, 0);
+    markFinder(base, functional, 0, size - 7);
+    for (let i = 8; i < size - 8; i += 1) {
+      base[6][i] = i % 2 === 0;
+      base[i][6] = i % 2 === 0;
+      functional[6][i] = true;
+      functional[i][6] = true;
+    }
+    setFormat(base, functional, 0); // also reserves every format module
+
+    const dataBits = [];
+    makeCodewords(lrn).forEach((byte) => appendBits(dataBits, byte, 8));
+    let best = null;
+    let bestScore = Infinity;
+    for (let mask = 0; mask < 8; mask += 1) {
+      const matrix = base.map((row) => row.slice());
+      let bitIndex = 0;
+      let upward = true;
+      for (let right = size - 1; right >= 1; right -= 2) {
+        if (right === 6) right -= 1;
+        for (let vertical = 0; vertical < size; vertical += 1) {
+          const y = upward ? size - 1 - vertical : vertical;
+          for (let offset = 0; offset < 2; offset += 1) {
+            const x = right - offset;
+            if (functional[y][x]) continue;
+            const bit = bitIndex < dataBits.length ? dataBits[bitIndex] !== 0 : false;
+            matrix[y][x] = bit !== maskCondition(mask, x, y);
+            bitIndex += 1;
+          }
+        }
+        upward = !upward;
+      }
+      setFormat(matrix, functional, mask);
+      const score = penalty(matrix);
+      if (score < bestScore) {
+        bestScore = score;
+        best = matrix;
+      }
+    }
+    return best;
+  }
+
+  function drawQr(context, matrix, left, top) {
+    context.fillStyle = "#ffffff";
+    context.fillRect(left, top, QR_SIZE, QR_SIZE);
+    context.fillStyle = "#000000";
+    const quiet = 4;
+    for (let y = 0; y < matrix.length; y += 1) {
+      for (let x = 0; x < matrix.length; x += 1) {
+        if (matrix[y][x]) {
+          context.fillRect(
+            left + (x + quiet) * QR_MODULE_PIXELS,
+            top + (y + quiet) * QR_MODULE_PIXELS,
+            QR_MODULE_PIXELS,
+            QR_MODULE_PIXELS
+          );
+        }
+      }
+    }
+  }
+
+  function fitName(context, name, maxWidth) {
+    let size = 14 * SCALE;
+    const minimum = 9 * SCALE;
+    while (size > minimum) {
+      context.font = `${size}px Arial, sans-serif`;
+      if (context.measureText(name).width <= maxWidth) break;
+      size -= 2;
+    }
+    context.font = `${size}px Arial, sans-serif`;
+    return name;
+  }
+
+  function renderPage(pageStudents) {
+    const canvas = document.createElement("canvas");
+    canvas.width = PAGE_WIDTH;
+    canvas.height = PAGE_HEIGHT;
+    const context = canvas.getContext("2d", { alpha: false });
+    context.imageSmoothingEnabled = false;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, PAGE_WIDTH, PAGE_HEIGHT);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+
+    pageStudents.forEach((student, index) => {
+      const column = index % COLUMNS;
+      const row = Math.floor(index / COLUMNS);
+      const x = LEFT_MARGIN + column * (CARD_WIDTH + COLUMN_GAP);
+      const y = TOP_MARGIN + row * (CARD_HEIGHT + ROW_GAP);
+      context.strokeStyle = "#000000";
+      context.lineWidth = SCALE;
+      context.strokeRect(x + SCALE / 2, y + SCALE / 2, CARD_WIDTH - SCALE, CARD_HEIGHT - SCALE);
+
+      const qrX = x + Math.floor((CARD_WIDTH - QR_SIZE) / 2);
+      const qrY = y + 5 * SCALE;
+      drawQr(context, createQrMatrix(student.lrn), qrX, qrY);
+
+      context.fillStyle = "#000000";
+      fitName(context, student.name, CARD_WIDTH - 10 * SCALE);
+      context.fillText(student.name, x + CARD_WIDTH / 2, y + CARD_HEIGHT - 13 * SCALE);
+    });
+    return canvas;
+  }
+
+  function canvasToBlob(canvas) {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("The browser could not create the PNG.")), "image/png");
+    });
+  }
+
+  function downloadBlob(blob, filename) {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 2000);
+  }
+
+  const CRC_TABLE = (function () {
+    const table = new Uint32Array(256);
+    for (let n = 0; n < 256; n += 1) {
+      let value = n;
+      for (let k = 0; k < 8; k += 1) value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+      table[n] = value >>> 0;
+    }
+    return table;
+  }());
+
+  function crc32(bytes) {
+    let crc = 0xffffffff;
+    for (let i = 0; i < bytes.length; i += 1) crc = CRC_TABLE[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function write16(array, offset, value) {
+    array[offset] = value & 0xff;
+    array[offset + 1] = (value >>> 8) & 0xff;
+  }
+
+  function write32(array, offset, value) {
+    array[offset] = value & 0xff;
+    array[offset + 1] = (value >>> 8) & 0xff;
+    array[offset + 2] = (value >>> 16) & 0xff;
+    array[offset + 3] = (value >>> 24) & 0xff;
+  }
+
+  async function makeZip(files) {
+    const encoder = new TextEncoder();
+    const chunks = [];
+    const central = [];
+    let offset = 0;
+    for (const file of files) {
+      const name = encoder.encode(file.name);
+      const data = new Uint8Array(await file.blob.arrayBuffer());
+      const checksum = crc32(data);
+      const local = new Uint8Array(30 + name.length);
+      write32(local, 0, 0x04034b50);
+      write16(local, 4, 20);
+      write16(local, 6, 0x0800);
+      write16(local, 8, 0); // stored, no compression
+      write32(local, 14, checksum);
+      write32(local, 18, data.length);
+      write32(local, 22, data.length);
+      write16(local, 26, name.length);
+      local.set(name, 30);
+      chunks.push(local, data);
+
+      const entry = new Uint8Array(46 + name.length);
+      write32(entry, 0, 0x02014b50);
+      write16(entry, 4, 20);
+      write16(entry, 6, 20);
+      write16(entry, 8, 0x0800);
+      write16(entry, 10, 0);
+      write32(entry, 16, checksum);
+      write32(entry, 20, data.length);
+      write32(entry, 24, data.length);
+      write16(entry, 28, name.length);
+      write32(entry, 42, offset);
+      entry.set(name, 46);
+      central.push(entry);
+      offset += local.length + data.length;
+    }
+    const centralSize = central.reduce((sum, entry) => sum + entry.length, 0);
+    const end = new Uint8Array(22);
+    write32(end, 0, 0x06054b50);
+    write16(end, 8, files.length);
+    write16(end, 10, files.length);
+    write32(end, 12, centralSize);
+    write32(end, 16, offset);
+    return new Blob(chunks.concat(central, [end]), { type: "application/zip" });
+  }
+
+  async function exportImages() {
+    if (inputSource === "paste") {
+      renderPreview(detectStudents(parseRows(document.getElementById("pasteBox").value)));
+    } else {
+      updateFromTable();
+    }
+    if (!students.length) {
+      alert("No valid student rows were found. Each row needs one exact 12-digit LRN and a student name.");
       return;
     }
-
-    const zipBlob =
-      await createZipBlob(
-        pages
-      );
-
-    downloadBlob(
-      zipBlob,
-      "Student-QR-Codes.zip"
-    );
-
-    statusText.textContent =
-      `Done. Generated ${students.length} QR code(s) across ${pages.length} PNG files.`;
-  } catch (error) {
-    console.error(error);
-
-    statusText.textContent =
-      "Something went wrong while generating the QR codes.";
-
-    alert(
-      error.message ||
-      String(error)
-    );
+    const button = document.getElementById("exportButton");
+    button.disabled = true;
+    const status = document.getElementById("status");
+    try {
+      const pageCount = Math.ceil(students.length / PER_PAGE);
+      const files = [];
+      for (let page = 0; page < pageCount; page += 1) {
+        status.textContent = `Rendering high-resolution page ${page + 1} of ${pageCount}…`;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const canvas = renderPage(students.slice(page * PER_PAGE, (page + 1) * PER_PAGE));
+        const blob = await canvasToBlob(canvas);
+        files.push({ name: `student-qr-page-${page + 1}.png`, blob });
+      }
+      if (files.length === 1) downloadBlob(files[0].blob, files[0].name);
+      else downloadBlob(await makeZip(files), "student-qr-pages-high-resolution.zip");
+      status.textContent = `${students.length} QR code${students.length === 1 ? "" : "s"} exported at 5656 × 8000 pixels per page.`;
+    } catch (error) {
+      console.error(error);
+      status.textContent = `Export failed: ${error.message}`;
+      alert(`Export failed: ${error.message}`);
+    } finally {
+      button.disabled = false;
+    }
   }
-});
+
+  function initialize() {
+    document.getElementById("createTable").addEventListener("click", () => {
+      const count = Math.max(1, Math.min(500, Number(document.getElementById("studentCount").value) || 1));
+      createInputTable(count);
+      inputSource = "table";
+      students = [];
+      document.getElementById("status").textContent = "Table created. Paste into its first cell.";
+    });
+    document.getElementById("usePastedData").addEventListener("click", () => {
+      const rows = parseRows(document.getElementById("pasteBox").value);
+      renderPreview(detectStudents(rows));
+      inputSource = "paste";
+      if (rows.length) {
+        createInputTable(rows.length);
+        rows.forEach((row, r) => row.slice(0, FIELD_COUNT).forEach((value, c) => {
+          const input = document.querySelector(`#tableContainer input[data-row="${r}"][data-column="${c}"]`);
+          if (input) input.value = value;
+        }));
+      }
+    });
+    document.getElementById("exportButton").addEventListener("click", exportImages);
+    createInputTable(Number(document.getElementById("studentCount").value));
+  }
+
+  if (typeof document !== "undefined") document.addEventListener("DOMContentLoaded", initialize);
+  if (typeof module !== "undefined" && module.exports) {
+    module.exports = { createQrMatrix, makeCodewords, detectStudents, parseRows, formatBits };
+  }
+}());

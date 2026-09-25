@@ -1,48 +1,41 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Student QR Generator</title>
 </head>
 <body>
-
-  <h2>Student QR Generator</h2>
+  <h1>Student QR Generator</h1>
 
   <p>
-    need rag duha ka columns, kanang naay LRN ras name sa student, pwede rag i-copy ag content sa usa ka table
+    Paste copied spreadsheet rows below. The generator finds one exact 12-digit LRN
+    in each row and keeps it paired with the student's name from that same row.
+  </p>
+
+  <label for="studentCount">Number of students:</label>
+  <input id="studentCount" type="number" min="1" max="500" value="32">
+  <button id="createTable" type="button">Create table</button>
+
+  <p>
+    You may paste directly into the first table cell, or paste any tab-separated
+    columns into this box:
+  </p>
+  <textarea id="pasteBox" rows="8" cols="100" placeholder="Paste rows copied from Google Sheets here"></textarea>
+  <br>
+  <button id="usePastedData" type="button">Use pasted data</button>
+
+  <p id="status" role="status"></p>
+  <div id="tableContainer"></div>
+
+  <p>
+    <button id="exportButton" type="button">Export high-resolution PNG / ZIP</button>
   </p>
 
   <p>
-    pwede rag pila ka column i-copy nimo basta kay naa lamay column nga nag include ug LRN tas name goods na, no need to rearrange the table ehe
+    Export size: 5656 × 8000 pixels per page. Up to 35 students fit on each page.
+    More than 35 students are downloaded together as a ZIP.
   </p>
-
-  <textarea
-    id="pasteBox"
-    rows="14"
-    cols="120"
-    placeholder="paste data here, mao ra bye p.s shoutout gabriel saludo"
-  ></textarea>
-
-  <br><br>
-
-  <button id="analyzeBtn">Detect Students and LRNs</button>
-  <button id="exportBtn">Export PNG / ZIP</button>
-
-  <p id="status"></p>
-
-  <h3>Detected Students</h3>
-
-  <table border="1" cellpadding="4" cellspacing="0">
-    <thead>
-      <tr>
-        <th>STUDENT NAME</th>
-        <th>LRN</th>
-        <th>STATUS</th>
-      </tr>
-    </thead>
-    <tbody id="detectedBody"></tbody>
-  </table>
 
   <script src="script.js"></script>
 </body>
